@@ -1909,6 +1909,8 @@ async function handleMessage(message, ws, userSockets) {
           senderType,
           timestamp: newMsgDoc.timestamp.toISOString(),
           status: 'sent',
+            tempId, // ✅ أضف هذا السطر
+
         };
 
         sendToUser(userSockets, ws.userId, {
