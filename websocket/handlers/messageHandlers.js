@@ -1836,114 +1836,277 @@ async function handleMessage(message, ws, userSockets) {
       break;
     }
 
+case 'send_group_message': {
+  const { groupId, newMessage, messageType = 'text', tempId, senderType } = msg;
 
-    case 'send_group_message': {
-      const { groupId, newMessage, messageType = 'text', tempId, senderType } = msg;
-      console.log(senderType, 'senderType');
+  if (!groupId || !newMessage || typeof newMessage !== 'string' || newMessage.trim() === '') {
+    sendToUser(userSockets, ws.userId, {
+      type: 'send_group_message_failed',
+      message: 'بيانات غير مكتملة لإرسال الرسالة.',
+    });
+    break;
+  }
 
-      if (!groupId || !newMessage || typeof newMessage !== 'string' || newMessage.trim() === '') {
-        sendToUser(userSockets, ws.userId, {
-          type: 'send_group_message_failed',
-          message: 'بيانات غير مكتملة لإرسال الرسالة.',
-        });
-        break;
-      }
+  try {
+    const mongoose = require('mongoose');
+    const Group = require('../../models/group');
+    const GroupMessage = require('../../models/GroupMessage');
+    const User = require('../../models/user');
+    const { searchSongMp3 } = require('../../websocket/utils/handlePlayCommand');
 
-      try {
-        const mongoose = require('mongoose');
-        const Group = require('../../models/group');
-        const GroupMessage = require('../../models/GroupMessage');
-        const User = require('../../models/user');
-
-        const group = await Group.findById(groupId);
-        if (!group) {
-          sendToUser(userSockets, ws.userId, {
-            type: 'send_group_message_failed',
-            message: 'المجموعة غير موجودة.',
-          });
-          break;
-        }
-
-        const isMember = group.members.some(id => id.equals(ws.userId));
-        if (!isMember && senderType === 'user') {
-          sendToUser(userSockets, ws.userId, {
-            type: 'send_group_message_failed',
-            message: 'أنت لست عضواً في هذه المجموعة.',
-          });
-          break;
-        }
-
-        const newMsgDoc = new GroupMessage({
-          sender: senderType === 'user' ? ws.userId : undefined,
-          senderType,
-          groupId,
-          text: newMessage.trim(),
-          messageType,
-          timestamp: new Date(),
-          status: 'sent',
-        });
-
-        await newMsgDoc.save();
-
-        group.lastMessage = newMsgDoc._id;
-        await group.save();
-
-        let senderDetails = null;
-
-        if (senderType === 'user') {
-          senderDetails = await User.findById(ws.userId).select('_id username avatarUrl badge').lean();
-        } else {
-          senderDetails = {
-            _id: null,
-            username: 'النظام',
-            avatarUrl: null,
-          };
-        }
-
-        const messageToSend = {
-          _id: newMsgDoc._id.toString(),
-          sender: senderDetails,
-          groupId: groupId.toString(),
-          text: newMsgDoc.text,
-          messageType,
-          senderType,
-          timestamp: newMsgDoc.timestamp.toISOString(),
-          status: 'sent',
-            tempId, // ✅ أضف هذا السطر
-
-        };
-
-        sendToUser(userSockets, ws.userId, {
-          type: 'group_message_sent_confirmation',
-          tempId,
-          newMessage: messageToSend,
-          receiver: ws.userId.toString(),
-        });
-
-        const membersIdsStr = group.members.map(member => member._id.toString());
-
-        membersIdsStr.forEach(memberIdStr => {
-          const userWs = userSockets.get(memberIdStr);
-          if (userWs && userWs.readyState === userWs.OPEN) {
-            userWs.send(JSON.stringify({
-              type: 'new_group_message',
-              groupId: groupId.toString(),
-              newMessage: messageToSend,
-              receiver: memberIdStr,
-            }));
-          }
-        });
-
-      } catch (error) {
-        console.error('Error sending group message:', error);
-        sendToUser(userSockets, ws.userId, {
-          type: 'send_group_message_failed',
-          message: 'حدث خطأ أثناء إرسال الرسالة.',
-        });
-      }
-
+    const group = await Group.findById(groupId);
+    if (!group) {
+      sendToUser(userSockets, ws.userId, {
+        type: 'send_group_message_failed',
+        message: 'المجموعة غير موجودة.',
+      });
       break;
     }
+
+    const isMember = group.members.some(id => id.equals(ws.userId));
+    if (!isMember && senderType === 'user') {
+      sendToUser(userSockets, ws.userId, {
+        type: 'send_group_message_failed',
+        message: 'أنت لست عضواً في هذه المجموعة.',
+      });
+      break;
+    }
+
+    // ✅ تحقق من كلمة "تشغيل"
+if (newMessage.trim().toLowerCase().startsWith('تشغيل ')) {
+  const songName = newMessage.trim().slice(7);
+  if (songName.length > 0) {
+    const song = await searchSongMp3(songName);
+
+    const responseText = song
+      ? `🎵 ${song.title}\n🔗 ${song.mp3Url}`
+      : `❌ لم يتم العثور على "${songName}" على YouTube.`;
+
+    const systemMsg = new GroupMessage({
+      senderType: 'system',
+      groupId,
+      text: responseText,
+      messageType: 'text',
+      timestamp: new Date(),
+      status: 'sent',
+    });
+
+    await systemMsg.save();
+    group.lastMessage = systemMsg._id;
+    await group.save();
+
+    const messageToSend = {
+      _id: systemMsg._id.toString(),
+      sender: {
+        _id: null,
+        username: 'النظام',
+        avatarUrl: null,
+      },
+      groupId: groupId.toString(),
+      text: responseText,
+      messageType: 'text',
+      senderType: 'system',
+      timestamp: systemMsg.timestamp.toISOString(),
+      status: 'sent',
+    };
+
+    const membersIdsStr = group.members.map(member => member._id.toString());
+    membersIdsStr.forEach(memberIdStr => {
+      const userWs = userSockets.get(memberIdStr);
+      if (userWs && userWs.readyState === userWs.OPEN) {
+        userWs.send(JSON.stringify({
+          type: 'new_group_message',
+          groupId: groupId.toString(),
+          newMessage: messageToSend,
+          receiver: memberIdStr,
+        }));
+      }
+    });
+
+    return;
+  }
+}
+
+
+    // ✅ الرسائل العادية
+    const newMsgDoc = new GroupMessage({
+      sender: senderType === 'user' ? ws.userId : undefined,
+      senderType,
+      groupId,
+      text: newMessage.trim(),
+      messageType,
+      timestamp: new Date(),
+      status: 'sent',
+    });
+
+    await newMsgDoc.save();
+
+    group.lastMessage = newMsgDoc._id;
+    await group.save();
+
+    let senderDetails = null;
+
+    if (senderType === 'user') {
+      senderDetails = await User.findById(ws.userId).select('_id username avatarUrl badge').lean();
+    } else {
+      senderDetails = {
+        _id: null,
+        username: 'النظام',
+        avatarUrl: null,
+      };
+    }
+
+    const messageToSend = {
+      _id: newMsgDoc._id.toString(),
+      sender: senderDetails,
+      groupId: groupId.toString(),
+      text: newMsgDoc.text,
+      messageType,
+      senderType,
+      timestamp: newMsgDoc.timestamp.toISOString(),
+      status: 'sent',
+      tempId,
+    };
+
+    sendToUser(userSockets, ws.userId, {
+      type: 'group_message_sent_confirmation',
+      tempId,
+      newMessage: messageToSend,
+      receiver: ws.userId.toString(),
+    });
+
+    const membersIdsStr = group.members.map(member => member._id.toString());
+
+    membersIdsStr.forEach(memberIdStr => {
+      const userWs = userSockets.get(memberIdStr);
+      if (userWs && userWs.readyState === userWs.OPEN) {
+        userWs.send(JSON.stringify({
+          type: 'new_group_message',
+          groupId: groupId.toString(),
+          newMessage: messageToSend,
+          receiver: memberIdStr,
+        }));
+      }
+    });
+
+  } catch (error) {
+    console.error('Error sending group message:', error);
+    sendToUser(userSockets, ws.userId, {
+      type: 'send_group_message_failed',
+      message: 'حدث خطأ أثناء إرسال الرسالة.',
+    });
+  }
+
+  break;
+}
+
+    // case 'send_group_message': {
+    //   const { groupId, newMessage, messageType = 'text', tempId, senderType } = msg;
+    //   console.log(senderType, 'senderType');
+
+    //   if (!groupId || !newMessage || typeof newMessage !== 'string' || newMessage.trim() === '') {
+    //     sendToUser(userSockets, ws.userId, {
+    //       type: 'send_group_message_failed',
+    //       message: 'بيانات غير مكتملة لإرسال الرسالة.',
+    //     });
+    //     break;
+    //   }
+
+    //   try {
+    //     const mongoose = require('mongoose');
+    //     const Group = require('../../models/group');
+    //     const GroupMessage = require('../../models/GroupMessage');
+    //     const User = require('../../models/user');
+
+    //     const group = await Group.findById(groupId);
+    //     if (!group) {
+    //       sendToUser(userSockets, ws.userId, {
+    //         type: 'send_group_message_failed',
+    //         message: 'المجموعة غير موجودة.',
+    //       });
+    //       break;
+    //     }
+
+    //     const isMember = group.members.some(id => id.equals(ws.userId));
+    //     if (!isMember && senderType === 'user') {
+    //       sendToUser(userSockets, ws.userId, {
+    //         type: 'send_group_message_failed',
+    //         message: 'أنت لست عضواً في هذه المجموعة.',
+    //       });
+    //       break;
+    //     }
+
+    //     const newMsgDoc = new GroupMessage({
+    //       sender: senderType === 'user' ? ws.userId : undefined,
+    //       senderType,
+    //       groupId,
+    //       text: newMessage.trim(),
+    //       messageType,
+    //       timestamp: new Date(),
+    //       status: 'sent',
+    //     });
+
+    //     await newMsgDoc.save();
+
+    //     group.lastMessage = newMsgDoc._id;
+    //     await group.save();
+
+    //     let senderDetails = null;
+
+    //     if (senderType === 'user') {
+    //       senderDetails = await User.findById(ws.userId).select('_id username avatarUrl badge').lean();
+    //     } else {
+    //       senderDetails = {
+    //         _id: null,
+    //         username: 'النظام',
+    //         avatarUrl: null,
+    //       };
+    //     }
+
+    //     const messageToSend = {
+    //       _id: newMsgDoc._id.toString(),
+    //       sender: senderDetails,
+    //       groupId: groupId.toString(),
+    //       text: newMsgDoc.text,
+    //       messageType,
+    //       senderType,
+    //       timestamp: newMsgDoc.timestamp.toISOString(),
+    //       status: 'sent',
+    //         tempId, // ✅ أضف هذا السطر
+
+    //     };
+
+    //     sendToUser(userSockets, ws.userId, {
+    //       type: 'group_message_sent_confirmation',
+    //       tempId,
+    //       newMessage: messageToSend,
+    //       receiver: ws.userId.toString(),
+    //     });
+
+    //     const membersIdsStr = group.members.map(member => member._id.toString());
+
+    //     membersIdsStr.forEach(memberIdStr => {
+    //       const userWs = userSockets.get(memberIdStr);
+    //       if (userWs && userWs.readyState === userWs.OPEN) {
+    //         userWs.send(JSON.stringify({
+    //           type: 'new_group_message',
+    //           groupId: groupId.toString(),
+    //           newMessage: messageToSend,
+    //           receiver: memberIdStr,
+    //         }));
+    //       }
+    //     });
+
+    //   } catch (error) {
+    //     console.error('Error sending group message:', error);
+    //     sendToUser(userSockets, ws.userId, {
+    //       type: 'send_group_message_failed',
+    //       message: 'حدث خطأ أثناء إرسال الرسالة.',
+    //     });
+    //   }
+
+    //   break;
+    // }
 
 
     case 'get_group_members': {
