@@ -1836,6 +1836,181 @@ async function handleMessage(message, ws, userSockets) {
       break;
     }
 
+    case 'start_group_voice_stream': {
+  const { groupId } = msg;
+
+  if (!groupId) {
+    sendToUser(userSockets, ws.userId, {
+      type: 'start_group_voice_stream_failed',
+      message: 'رقم المجموعة مفقود.',
+    });
+    break;
+  }
+
+  try {
+    const mongoose = require('mongoose');
+    const Group = require('../../models/group');
+    const { RtcTokenBuilder, RtcRole } = require('agora-access-token');
+    require('dotenv').config();
+
+    const group = await Group.findById(groupId);
+    if (!group) {
+      sendToUser(userSockets, ws.userId, {
+        type: 'start_group_voice_stream_failed',
+        message: 'المجموعة غير موجودة.',
+      });
+      break;
+    }
+
+    const isMember = group.members.some(id => id.equals(ws.userId));
+    if (!isMember) {
+      sendToUser(userSockets, ws.userId, {
+        type: 'start_group_voice_stream_failed',
+        message: 'أنت لست عضواً في هذه المجموعة.',
+      });
+      break;
+    }
+
+    const appID = process.env.AGORA_APP_ID;
+    const appCertificate = process.env.AGORA_APP_CERTIFICATE;
+    const channelName = `group_voice_${groupId}`;
+    const uid = ws.userId.toString(); // أو رقم عشوائي لكل مستخدم
+    const role = RtcRole.PUBLISHER;
+    const expirationTimeInSeconds = 3600;
+    const currentTimestamp = Math.floor(Date.now() / 1000);
+    const privilegeExpiredTs = currentTimestamp + expirationTimeInSeconds;
+
+    const token = RtcTokenBuilder.buildTokenWithUid(
+      appID,
+      appCertificate,
+      channelName,
+      uid,
+      role,
+      privilegeExpiredTs
+    );
+
+    // إشعار كل أعضاء المجموعة ببدء البث
+    const membersIdsStr = group.members.map(m => m._id.toString());
+    membersIdsStr.forEach(memberIdStr => {
+      const userWs = userSockets.get(memberIdStr);
+      if (userWs && userWs.readyState === userWs.OPEN) {
+        userWs.send(JSON.stringify({
+          type: 'group_voice_stream_started',
+          groupId: groupId.toString(),
+          channelName,
+          appId: appID,
+          token,
+          startedBy: ws.userId.toString(),
+          receiver: memberIdStr,
+        }));
+      }
+    });
+
+  } catch (error) {
+    console.error('start_group_voice_stream Error:', error);
+    sendToUser(userSockets, ws.userId, {
+      type: 'start_group_voice_stream_failed',
+      message: 'حدث خطأ أثناء بدء البث الصوتي.',
+    });
+  }
+
+  break;
+}
+
+    case 'end_group_voice_stream': {
+  const { groupId } = msg;
+
+  if (!groupId) {
+    sendToUser(userSockets, ws.userId, {
+      type: 'end_group_voice_stream_failed',
+      message: 'رقم المجموعة غير موجود.',
+    });
+    break;
+  }
+
+  try {
+    const Group = require('../../models/group');
+    const group = await Group.findById(groupId);
+    if (!group) {
+      sendToUser(userSockets, ws.userId, {
+        type: 'end_group_voice_stream_failed',
+        message: 'المجموعة غير موجودة.',
+      });
+      break;
+    }
+
+    const membersIdsStr = group.members.map(m => m._id.toString());
+    membersIdsStr.forEach(memberIdStr => {
+      const userWs = userSockets.get(memberIdStr);
+      if (userWs && userWs.readyState === userWs.OPEN) {
+        userWs.send(JSON.stringify({
+          type: 'group_voice_stream_ended',
+          groupId: groupId.toString(),
+          endedBy: ws.userId.toString(),
+          receiver: memberIdStr,
+        }));
+      }
+    });
+
+  } catch (error) {
+    console.error('end_group_voice_stream Error:', error);
+    sendToUser(userSockets, ws.userId, {
+      type: 'end_group_voice_stream_failed',
+      message: 'حدث خطأ أثناء إنهاء البث.',
+    });
+  }
+
+  break;
+}
+
+
+case 'leave_group_voice_stream': {
+  const { groupId } = msg;
+
+  if (!groupId) {
+    sendToUser(userSockets, ws.userId, {
+      type: 'leave_group_voice_stream_failed',
+      message: 'رقم المجموعة غير موجود.',
+    });
+    break;
+  }
+
+  try {
+    const Group = require('../../models/group');
+    const group = await Group.findById(groupId);
+    if (!group) {
+      sendToUser(userSockets, ws.userId, {
+        type: 'leave_group_voice_stream_failed',
+        message: 'المجموعة غير موجودة.',
+      });
+      break;
+    }
+
+    const membersIdsStr = group.members.map(m => m._id.toString());
+    membersIdsStr.forEach(memberIdStr => {
+      const userWs = userSockets.get(memberIdStr);
+      if (userWs && userWs.readyState === userWs.OPEN) {
+        userWs.send(JSON.stringify({
+          type: 'user_left_group_voice_stream',
+          groupId: groupId.toString(),
+          leftBy: ws.userId.toString(),
+          receiver: memberIdStr,
+        }));
+      }
+    });
+
+  } catch (error) {
+    console.error('leave_group_voice_stream Error:', error);
+    sendToUser(userSockets, ws.userId, {
+      type: 'leave_group_voice_stream_failed',
+      message: 'حدث خطأ أثناء الخروج من البث.',
+    });
+  }
+
+  break;
+}
+
+
 case 'send_group_message': {
   const { groupId, newMessage, messageType = 'text', tempId, senderType } = msg;
 
